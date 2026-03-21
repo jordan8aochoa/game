@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Iso Platformer</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }
+  #wrapper {
+    position: relative;
+    display: inline-block;
+  }
+  canvas {
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 0 60px rgba(80,140,255,0.35);
+  }
+  #instructions {
+    margin-top: 10px;
+    color: rgba(255,255,255,0.55);
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="wrapper">
+  <canvas id="c"></canvas>
+</div>
+<div id="instructions">Arrow keys / WASD to move &nbsp;|&nbsp; Space / Up to jump &nbsp;|&nbsp; Touch controls on mobile</div>
+
+<script>
+'use strict';
+
+// ─── Canvas setup ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+const BASE_W = 844, BASE_H = 390;
+let scale = 1;
+
+function resize() {
+  const maxW = Math.min(window.innerWidth  - 20, BASE_W);
+  const maxH = Math.min(window.innerHeight - 60, BASE_H);
+  scale = Math.min(maxW / BASE_W, maxH / BASE_H);
+  canvas.width  = BASE_W * scale;
+  canvas.height = BASE_H * scale;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── Isometric math ──────────────────────────────────────────────────────────
+const TILE_W = 96, TILE_H = 48, TILE_D = 24;
+
+function isoToScreen(col, row, h = 0) {
+  return {
+    x: (col - row) * (TILE_W / 2),
+    y: (col + row) * (TILE_H / 2) + h * TILE_D
+  };
+}
+function isoZ(col, row, h = 0) { return -(col + row) * 10 + h * 0.1; }
+
+// ─── Colour helpers ──────────────────────────────────────────────────────────
+function darker(hex, amt) {
+  let [r,g,b] = hexToRgb(hex);
+  return `rgb(${Math.max(r-amt,0)},${Math.max(g-amt,0)},${Math.max(b-amt,0)})`;
+}
+function hexToRgb(c) {
+  // accept 'rgb(...)' or '#rrggbb' or css keywords
+  const tmp = document.createElement('canvas'); tmp.width=tmp.height=1;
+  const t = tmp.getContext('2d'); t.fillStyle=c; t.fillRect(0,0,1,1);
+  const d = t.getImageData(0,0,1,1).data;
+  return [d[0],d[1],d[2]];
+}
+
+// Block colour palettes
+const BLOCK_COLORS = {
+  grass: { top:'#5dba45', left:'#47922f', right:'#36701e' },
+  stone: { top:'#9999a8', left:'#737380', right:'#565660' },
+  dirt:  { top:'#a66e44', left:'#7d5232', right:'#5e3b22' },
+  ice:   { top:'#b3e6ff', left:'#85cce8', right:'#5aaecf' },
+  lava:  { top:'#ff7319', left:'#cc4d00', right:'#993a00' },
+};
+
+// ─── Draw isometric block ────────────────────────────────────────────────────
+function drawBlock(cx, cy, type, alpha=1) {
+  const C = BLOCK_COLORS[type];
+  const hw = TILE_W/2, hh = TILE_H/2, d = TILE_D;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(cx, cy);
+
+  // Top face
+  ctx.beginPath();
+  ctx.moveTo(0,   -hh);
+  ctx.lineTo(hw,   0);
+  ctx.lineTo(0,    hh);
+  ctx.lineTo(-hw,  0);
+  ctx.closePath();
+  ctx.fillStyle   = C.top;
+  ctx.strokeStyle = darker(C.top, 18);
+  ctx.lineWidth   = 1;
+  ctx.fill(); ctx.stroke();
+
+  // Left face
+  ctx.beginPath();
+  ctx.moveTo(-hw,  0);
+  ctx.lineTo(0,    hh);
+  ctx.lineTo(0,    hh+d);
+  ctx.lineTo(-hw,  d);
+  ctx.closePath();
+  ctx.fillStyle   = C.left;
+  ctx.strokeStyle = darker(C.left, 18);
+  ctx.fill(); ctx.stroke();
+
+  // Right face
+  ctx.beginPath();
+  ctx.moveTo(0,   hh);
+  ctx.lineTo(hw,  0);
+  ctx.lineTo(hw,  d);
+  ctx.lineTo(0,   hh+d);
+  ctx.closePath();
+  ctx.fillStyle   = C.right;
+  ctx.strokeStyle = darker(C.right, 18);
+  ctx.fill(); ctx.stroke();
+
+  ctx.restore();
+}
+
+// ─── Level data ──────────────────────────────────────────────────────────────
+// Each entry: { col, row, h, type, collectible? }
+// collectible: 'coin' | 'gem' | 'star'
+const LEVELS = [
+  // LEVEL 1
+  [
+    // Starting ground cluster
+    ...[0,1,2,3,4].map(c=>({col:c,row:0,h:0,type:'grass'})),
+    {col:2,row:0,h:0,type:'grass',col_:2,collectible:'coin'},
+    // Gap then elevated
+    {col:6,row:0,h:1,type:'grass'},{col:7,row:0,h:1,type:'grass',collectible:'coin'},
+    {col:8,row:0,h:1,type:'grass'},
+    // Diagonal step-up
+    {col:9,row:-1,h:1,type:'stone'},{col:10,row:-2,h:2,type:'stone',collectible:'gem'},
+    {col:11,row:-3,h:2,type:'stone'},
+    // Wide flat
+    ...[12,13,14,15,16].map(c=>({col:c,row:-3,h:2,type:'grass',collectible:c%2===0?'coin':null})),
+    // Ice with star
+    ...[17,18,19,20].map(c=>({col:c,row:-3,h:3,type:'ice',collectible:c===18?'star':null})),
+    // Single-tile jumps
+    ...[22,24,26,28].map(c=>({col:c,row:-3,h:3,type:'dirt',collectible:c===26?'gem':null})),
+    // Descent
+    ...[29,30,31,32,33].map(c=>({col:c,row:-3,h:Math.max(3-(c-29),0),type:'dirt'})),
+    // Final landing
+    ...[34,35,36,37,38].map(c=>({col:c,row:-3,h:0,type:'grass',collectible:c%2===0?'coin':null})),
+    {col:36,row:-3,h:0,type:'grass',collectible:'star'},
+  ],
+  // LEVEL 2
+  [
+    ...[0,1,2].map(c=>({col:c,row:0,h:0,type:'stone',collectible:c===1?'coin':null})),
+    {col:4,row:0,h:0,type:'lava'},{col:5,row:0,h:0,type:'stone',collectible:'coin'},
+    {col:6,row:0,h:0,type:'stone'},
+    {col:8,row:0,h:1,type:'stone'},{col:9,row:0,h:1,type:'stone',collectible:'gem'},
+    {col:11,row:0,h:2,type:'lava'},{col:12,row:0,h:2,type:'stone'},
+    {col:14,row:0,h:3,type:'stone',collectible:'coin'},
+    {col:15,row:0,h:3,type:'stone'},{col:16,row:0,h:3,type:'stone'},
+    {col:18,row:0,h:2,type:'dirt'},{col:19,row:0,h:2,type:'dirt'},
+    {col:21,row:0,h:1,type:'stone'},{col:22,row:0,h:1,type:'stone',collectible:'coin'},
+    {col:24,row:0,h:0,type:'grass'},{col:25,row:0,h:0,type:'grass',collectible:'star'},
+    {col:26,row:0,h:0,type:'grass'},
+    {col:28,row:0,h:2,type:'ice'},{col:29,row:0,h:2,type:'ice',collectible:'gem'},
+    {col:31,row:0,h:4,type:'ice'},{col:32,row:0,h:4,type:'ice',collectible:'coin'},
+    {col:34,row:0,h:3,type:'stone'},{col:35,row:0,h:3,type:'stone'},
+    {col:37,row:0,h:0,type:'grass'},{col:38,row:0,h:0,type:'grass',collectible:'star'},
+    {col:39,row:0,h:0,type:'grass'},
+  ]
+];
+
+// ─── Physics constants ────────────────────────────────────────────────────────
+const GRAVITY    = -900;
+const JUMP_V     = 380;
+const MOVE_SPD   = 160;
+const MAX_FALL   = -600;
+const FALL_OFF_Y = -250;
+
+// ─── Game state ───────────────────────────────────────────────────────────────
+let state       = 'playing'; // 'playing' | 'dead' | 'gameover'
+let score       = 0;
+let lives       = 3;
+let level       = 0;
+let deathTimer  = 0;
+
+// Platform list (computed from level)
+let platforms   = [];
+let collectibles= [];
+
+// Camera
+let camX = 0, camTargetX = 0;
+const CAM_Y = BASE_H * 0.52;  // vertical offset from scene centre to ground
+
+// Score popups
+let popups = [];
+
+// ─── Player ───────────────────────────────────────────────────────────────────
+const player = {
+  x: 0, y: 0,
+  vx: 0, vy: 0,
+  onGround: false,
+  facingRight: true,
+  legPhase: 0,
+  dead: false,
+  deadAlpha: 1,
+  deadAngle: 0,
+};
+
+function spawnPlayer() {
+  const sp = LEVELS[level][0];
+  const pos = isoToScreen(sp.col, sp.row, sp.h);
+  player.x = pos.x;
+  player.y = pos.y + 30;
+  player.vx = 0; player.vy = 0;
+  player.onGround = false; player.dead = false;
+  player.deadAlpha = 1; player.deadAngle = 0;
+  camX = player.x; camTargetX = player.x;
+}
+
+// ─── Load level ───────────────────────────────────────────────────────────────
+function loadLevel(lvl) {
+  level = lvl;
+  platforms = [];
+  collectibles = [];
+
+  for (const pd of LEVELS[level]) {
+    const pos = isoToScreen(pd.col, pd.row, pd.h);
+    const z   = isoZ(pd.col, pd.row, pd.h);
+    platforms.push({
+      col: pd.col, row: pd.row, h: pd.h, type: pd.type,
+      sx: pos.x, sy: pos.y, z
+    });
+    if (pd.collectible) {
+      collectibles.push({
+        col: pd.col, row: pd.row, h: pd.h,
+        type: pd.collectible,
+        x: pos.x, y: pos.y + 20,
+        z: z + 5,
+        collected: false,
+        bob: Math.random() * Math.PI * 2,
+        spin: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+  // Sort for correct draw order (furthest first)
+  platforms.sort((a,b) => b.z - a.z);
+  collectibles.sort((a,b) => b.z - a.z);
+  spawnPlayer();
+  state = 'playing';
+}
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+const keys = { left:false, right:false, jump:false };
+let jumpConsumed = false;
+
+document.addEventListener('keydown', e => {
+  if (e.code==='ArrowLeft'  || e.code==='KeyA') keys.left  = true;
+  if (e.code==='ArrowRight' || e.code==='KeyD') keys.right = true;
+  if ((e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW') && !keys.jump) {
+    keys.jump = true; jumpConsumed = false;
+  }
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  if (e.code==='ArrowLeft'  || e.code==='KeyA') keys.left  = false;
+  if (e.code==='ArrowRight' || e.code==='KeyD') keys.right = false;
+  if (e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW') keys.jump = false;
+});
+
+// ─── Touch controls ───────────────────────────────────────────────────────────
+const touch = { left:false, right:false, jump:false };
+
+const BTN = {
+  left:  { x:56,  y:BASE_H-70, w:64, h:64 },
+  right: { x:144, y:BASE_H-70, w:64, h:64 },
+  jump:  { x:BASE_W-100, y:BASE_H-70, w:78, h:78 },
+};
+
+function ptInBtn(px, py, btn) {
+  return px >= btn.x-btn.w/2 && px <= btn.x+btn.w/2 &&
+         py >= btn.y-btn.h/2 && py <= btn.y+btn.h/2;
+}
+
+function handleTouches(e) {
+  e.preventDefault();
+  touch.left = false; touch.right = false; touch.jump = false;
+  for (const t of e.touches) {
+    const rx = t.clientX / scale, ry = t.clientY / scale;
+    if (ptInBtn(rx, ry, BTN.left))  touch.left  = true;
+    if (ptInBtn(rx, ry, BTN.right)) touch.right = true;
+    if (ptInBtn(rx, ry, BTN.jump))  touch.jump  = true;
+  }
+}
+
+canvas.addEventListener('touchstart',  handleTouches, {passive:false});
+canvas.addEventListener('touchmove',   handleTouches, {passive:false});
+canvas.addEventListener('touchend',    handleTouches, {passive:false});
+canvas.addEventListener('touchcancel', handleTouches, {passive:false});
+
+// ─── Game over tap ────────────────────────────────────────────────────────────
+canvas.addEventListener('click', () => {
+  if (state === 'gameover') restartGame();
+});
+
+function restartGame() {
+  score = 0; lives = 3;
+  loadLevel(0);
+}
+
+// ─── Physics update ───────────────────────────────────────────────────────────
+function updatePhysics(dt) {
+  const ml = keys.left  || touch.left;
+  const mr = keys.right || touch.right;
+  const mj = (keys.jump || touch.jump) && !jumpConsumed;
+
+  if (ml) { player.vx = -MOVE_SPD; player.facingRight = false; }
+  else if (mr) { player.vx = MOVE_SPD; player.facingRight = true; }
+  else { player.vx *= 0.82; if (Math.abs(player.vx)<2) player.vx=0; }
+
+  // Jump
+  if (mj && player.onGround) {
+    player.vy = JUMP_V;
+    player.onGround = false;
+    jumpConsumed = true;
+  }
+  if (!(keys.jump || touch.jump)) jumpConsumed = false;
+
+  // Gravity
+  player.vy += GRAVITY * dt;
+  if (player.vy < MAX_FALL) player.vy = MAX_FALL;
+
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+
+  // Leg animation
+  if (player.onGround && Math.abs(player.vx) > 10) player.legPhase += dt * 12;
+
+  // Platform collision
+  let landed = false, bestSY = -Infinity;
+  const pb = player.y - 22;
+  const pl = player.x - 9, pr = player.x + 9;
+
+  for (const p of platforms) {
+    const lx = p.sx - TILE_W/2*0.90, rx = p.sx + TILE_W/2*0.90;
+    if (pr > lx && pl < rx) {
+      if (player.vy <= 0 && pb <= p.sy + 4 && pb >= p.sy - 18) {
+        if (p.sy > bestSY) { bestSY = p.sy; landed = true; }
+      }
+    }
+  }
+  if (landed) {
+    player.y = bestSY + 22;
+    player.vy = 0;
+    player.onGround = true;
+  } else {
+    // Check still grounded
+    let still = false;
+    for (const p of platforms) {
+      const lx = p.sx - TILE_W/2*0.90, rx = p.sx + TILE_W/2*0.90;
+      if (pr > lx && pl < rx && Math.abs(pb - p.sy) < 10) { still=true; break; }
+    }
+    if (!still) player.onGround = false;
+  }
+
+  // Collectibles
+  for (const c of collectibles) {
+    if (c.collected) continue;
+    const dx = c.x - player.x, dy = c.y - player.y;
+    if (dx*dx + dy*dy < 20*20) {
+      c.collected = true;
+      const pts = c.type==='coin'?10:c.type==='gem'?50:100;
+      score += pts;
+      popups.push({ x: c.x, y: c.y, text:`+${pts}`, alpha:1, vy:50 });
+    }
+  }
+
+  // Fall off
+  if (player.y < FALL_OFF_Y) {
+    lives--;
+    if (lives <= 0) { state = 'gameover'; }
+    else { state='dead'; deathTimer=0; }
+  }
+}
+
+// ─── Draw helpers ─────────────────────────────────────────────────────────────
+function drawPlayer(wx, wy) {
+  const sx = wx - camX + BASE_W/2;
+  const sy = CAM_Y - wy;
+  ctx.save();
+  ctx.translate(sx, sy);
+  if (!player.facingRight) ctx.scale(-1,1);
+
+  // Shadow
+  ctx.globalAlpha = player.onGround ? 0.22 : 0.08;
+  ctx.beginPath();
+  ctx.ellipse(0, 20, 14, 5, 0, 0, Math.PI*2);
+  ctx.fillStyle = '#000';
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Legs
+  const lp = player.legPhase;
+  const lOff = player.onGround ? Math.sin(lp)*5 : 0;
+  const rOff = player.onGround ? Math.sin(lp+Math.PI)*5 : 0;
+  ctx.fillStyle = '#2c5acc';
+  roundRect(ctx, -9,  8+lOff, 7, 12, 2); ctx.fill();
+  roundRect(ctx,  2,  8+rOff, 7, 12, 2); ctx.fill();
+
+  // Body
+  ctx.fillStyle = '#4088ff';
+  ctx.strokeStyle = '#2c5acc';
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, -10, -11, 20, 22, 4); ctx.fill(); ctx.stroke();
+
+  // Head
+  ctx.beginPath();
+  ctx.arc(0, -22, 11, 0, Math.PI*2);
+  ctx.fillStyle = '#ffd1a3';
+  ctx.strokeStyle = '#d4a87a';
+  ctx.lineWidth = 1.5;
+  ctx.fill(); ctx.stroke();
+
+  // Eyes
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(-4, -23, 2.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 4, -23, 2.5, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y); ctx.arcTo(x+w,y,   x+w,y+r,   r);
+  ctx.lineTo(x+w, y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r, y+h); ctx.arcTo(x,y+h,   x,y+h-r,   r);
+  ctx.lineTo(x, y+r); ctx.arcTo(x,y,       x+r,y,     r);
+  ctx.closePath();
+}
+
+// ─── Draw collectible ─────────────────────────────────────────────────────────
+function drawCollectible(c, t) {
+  if (c.collected) return;
+  const sx = c.x - camX + BASE_W/2;
+  const sy = CAM_Y - c.y + Math.sin(t*1.8 + c.bob)*4;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(t*1.2 + c.spin);
+
+  if (c.type === 'coin') {
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0, Math.PI*2);
+    ctx.fillStyle = '#ffd91a';
+    ctx.strokeStyle = '#c9a800';
+    ctx.lineWidth = 2;
+    ctx.fill(); ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, 5, 0, Math.PI*2);
+    ctx.strokeStyle = '#e8c200';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  } else if (c.type === 'gem') {
+    ctx.beginPath();
+    ctx.moveTo(0,-12); ctx.lineTo(8,-4); ctx.lineTo(6,8);
+    ctx.lineTo(-6,8); ctx.lineTo(-8,-4); ctx.closePath();
+    ctx.fillStyle = '#4de4ff';
+    ctx.strokeStyle = '#00b8d9';
+    ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
+  } else { // star
+    starPath(ctx, 0, 0, 5, 10, 5);
+    ctx.fillStyle = '#ff80f0';
+    ctx.strokeStyle = '#cc44cc';
+    ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
+  }
+
+  // Glow
+  ctx.globalAlpha = 0.2;
+  ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2);
+  ctx.fillStyle = c.type==='coin'?'#ffd91a':c.type==='gem'?'#4de4ff':'#ff80f0';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function starPath(ctx, cx, cy, pts, r, ir) {
+  ctx.beginPath();
+  for (let i=0;i<pts;i++) {
+    const a  = i*Math.PI*2/pts - Math.PI/2;
+    const ia = a + Math.PI/pts;
+    i===0 ? ctx.moveTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r)
+           : ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+    ctx.lineTo(cx+Math.cos(ia)*ir, cy+Math.sin(ia)*ir);
+  }
+  ctx.closePath();
+}
+
+// ─── Draw HUD ─────────────────────────────────────────────────────────────────
+function drawHUD() {
+  // Panel
+  ctx.save();
+  ctx.fillStyle   = 'rgba(0,0,0,0.45)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth   = 1;
+  roundRect(ctx, BASE_W/2-180, 14, 360, 42, 10);
+  ctx.fill(); ctx.stroke();
+
+  // Score
+  ctx.fillStyle = '#ffe84d';
+  ctx.font      = 'bold 20px "Segoe UI"';
+  ctx.textAlign = 'left';
+  ctx.fillText(`⬡ ${score}`, BASE_W/2-168, 41);
+
+  // Level
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font      = '16px "Segoe UI"';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Lv ${level+1}`, BASE_W/2+130, 41);
+
+  // Hearts
+  for (let i=0;i<3;i++) {
+    drawHeart(BASE_W/2+148+i*28, 36, i < lives);
+  }
+
+  ctx.restore();
+}
+
+function drawHeart(x, y, filled) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, -6);
+  ctx.bezierCurveTo(-11,-2,-11,9,0,7);
+  ctx.bezierCurveTo(11,9,11,-2,0,-6);
+  ctx.closePath();
+  ctx.fillStyle   = filled ? '#f03050' : 'rgba(100,100,100,0.5)';
+  ctx.strokeStyle = filled ? '#a01830' : 'transparent';
+  ctx.lineWidth   = 1;
+  ctx.fill();
+  if (filled) ctx.stroke();
+  ctx.restore();
+}
+
+// ─── Touch button UI ─────────────────────────────────────────────────────────
+function drawControls() {
+  const isMobile = /Mobi|Android/i.test(navigator.userAgent) || window.innerWidth < 700;
+  if (!isMobile && !window._showControls) return;
+
+  for (const [name, btn] of Object.entries(BTN)) {
+    const active = touch[name];
+    ctx.save();
+    ctx.globalAlpha = active ? 0.6 : 0.3;
+    ctx.fillStyle   = '#fff';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth   = 2;
+    roundRect(ctx, btn.x-btn.w/2, btn.y-btn.h/2, btn.w, btn.h, btn.w*0.3);
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle   = active ? '#222' : 'rgba(0,0,0,0.7)';
+    ctx.font        = `bold ${btn.w*0.38}px "Segoe UI"`;
+    ctx.textAlign   = 'center';
+    ctx.textBaseline= 'middle';
+    ctx.fillText(name==='left'?'◀':name==='right'?'▶':'▲', btn.x, btn.y);
+    ctx.restore();
+  }
+}
+
+// always show touch controls
+window._showControls = true;
+
+// ─── Score popups ─────────────────────────────────────────────────────────────
+function drawPopups(dt) {
+  ctx.save();
+  ctx.font      = 'bold 22px "Segoe UI"';
+  ctx.textAlign = 'center';
+  for (let i = popups.length-1; i>=0; i--) {
+    const p = popups[i];
+    p.y    += p.vy * dt;
+    p.alpha -= dt * 1.4;
+    if (p.alpha <= 0) { popups.splice(i,1); continue; }
+    const sx = p.x - camX + BASE_W/2;
+    const sy = CAM_Y - p.y;
+    ctx.globalAlpha = p.alpha;
+    ctx.fillStyle   = '#ffe84d';
+    ctx.fillText(p.text, sx, sy);
+  }
+  ctx.restore();
+}
+
+// ─── Background sky ───────────────────────────────────────────────────────────
+let clouds = Array.from({length:10},(_,i)=>({
+  x: i*160 - 200, y: 30 + Math.random()*80,
+  w: 80+Math.random()*60, speed: 10+Math.random()*15,
+  alpha: 0.5+Math.random()*0.3
+}));
+
+function drawBackground(dt) {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0,0,0,BASE_H);
+  grad.addColorStop(0, '#3872cc');
+  grad.addColorStop(1, '#6ab0f5');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,BASE_W,BASE_H);
+
+  // Clouds (parallax: move at half camera speed)
+  const camOff = (camX * 0.3) % (BASE_W + 200);
+  for (const cl of clouds) {
+    const cx = ((cl.x - camOff % (BASE_W+200) + BASE_W+200) % (BASE_W+200)) - 100;
+    ctx.save();
+    ctx.globalAlpha = cl.alpha;
+    ctx.fillStyle   = '#fff';
+    for (let i=0;i<4;i++) {
+      ctx.beginPath();
+      ctx.arc(cx + i*cl.w*0.28, cl.y, cl.w*(0.22+i*0.05), 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// ─── Overlay screens ─────────────────────────────────────────────────────────
+function drawGameOver() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0,0,BASE_W,BASE_H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff4455';
+  ctx.font      = 'bold 52px "Segoe UI"';
+  ctx.fillText('GAME OVER', BASE_W/2, BASE_H/2-20);
+
+  ctx.fillStyle = '#fff';
+  ctx.font      = 'bold 28px "Segoe UI"';
+  ctx.fillText(`Score: ${score}`, BASE_W/2, BASE_H/2+25);
+
+  ctx.fillStyle = `rgba(230,230,230,${0.5+0.5*Math.sin(Date.now()/400)})`;
+  ctx.font      = '22px "Segoe UI"';
+  ctx.fillText('Tap / click to restart', BASE_W/2, BASE_H/2+70);
+  ctx.restore();
+}
+
+// ─── Main loop ────────────────────────────────────────────────────────────────
+let last = 0;
+function frame(ts) {
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+
+  // Clear
+  ctx.clearRect(0,0,BASE_W,BASE_H);
+  drawBackground(dt);
+
+  const t = ts / 1000;
+
+  if (state === 'playing') {
+    updatePhysics(dt);
+    // Smooth camera
+    camTargetX = player.x;
+    camX += (camTargetX - camX) * Math.min(dt * 7, 1);
+  } else if (state === 'dead') {
+    deathTimer += dt;
+    if (deathTimer > 1.2) loadLevel(level);
+  }
+
+  // ── Draw world (sorted platforms) ──
+  for (const p of platforms) {
+    const sx = p.sx - camX + BASE_W/2;
+    const sy = CAM_Y - p.sy;
+    drawBlock(sx, sy, p.type);
+  }
+
+  // ── Collectibles ──
+  for (const c of collectibles) drawCollectible(c, t);
+
+  // ── Player ──
+  if (state === 'playing' || state === 'dead') {
+    if (state === 'dead') {
+      player.deadAngle += dt * 10;
+      player.deadAlpha  = Math.max(0, 1 - deathTimer/0.8);
+      player.y         -= 80 * dt;
+    }
+    ctx.save();
+    ctx.globalAlpha = player.dead ? player.deadAlpha : 1;
+    ctx.translate(player.x - camX + BASE_W/2, CAM_Y - player.y);
+    if (state==='dead') ctx.rotate(player.deadAngle);
+    ctx.translate(-(player.x - camX + BASE_W/2), -(CAM_Y - player.y));
+    ctx.restore();
+    drawPlayer(player.x, player.y);
+  }
+
+  // ── Popups ──
+  drawPopups(dt);
+
+  // ── HUD ──
+  drawHUD();
+  drawControls();
+
+  if (state === 'gameover') drawGameOver();
+
+  requestAnimationFrame(frame);
+}
+
+// ─── Boot ──────────────────────────────────────────────────────────────────────
+loadLevel(0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
