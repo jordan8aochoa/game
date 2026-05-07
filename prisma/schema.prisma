@@ -1,0 +1,271 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  GENERAL_CONTRACTOR
+  SUBCONTRACTOR
+  FOREMAN
+  OWNER
+  VIEWER
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ChangeOrderStatus {
+  DRAFT
+  SUBMITTED
+  REVIEWED
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum TMTicketStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  avatar        String?
+  role          UserRole  @default(SUBCONTRACTOR)
+  companyId     String?
+  company       Company?  @relation(fields: [companyId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  projectMembers    ProjectMember[]
+  changeOrders      ChangeOrder[]
+  tmTickets         TMTicket[]
+  comments          Comment[]
+  notifications     Notification[]
+  approvals         Approval[]
+  activityLogs      ActivityLog[]
+}
+
+model Company {
+  id          String    @id @default(cuid())
+  name        String
+  logo        String?
+  address     String?
+  phone       String?
+  email       String?
+  website     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  users       User[]
+  projects    Project[]
+}
+
+model Project {
+  id            String        @id @default(cuid())
+  name          String
+  description   String?
+  address       String?
+  status        ProjectStatus @default(ACTIVE)
+  budget        Decimal?      @db.Decimal(15, 2)
+  startDate     DateTime?
+  endDate       DateTime?
+  companyId     String
+  company       Company       @relation(fields: [companyId], references: [id])
+  qrCode        String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  members       ProjectMember[]
+  changeOrders  ChangeOrder[]
+  tmTickets     TMTicket[]
+  attachments   Attachment[]
+  activityLogs  ActivityLog[]
+}
+
+model ProjectMember {
+  id        String    @id @default(cuid())
+  projectId String
+  userId    String
+  role      UserRole
+  project   Project   @relation(fields: [projectId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  joinedAt  DateTime  @default(now())
+
+  @@unique([projectId, userId])
+}
+
+model ChangeOrder {
+  id            String            @id @default(cuid())
+  number        String
+  title         String
+  description   String?
+  status        ChangeOrderStatus @default(DRAFT)
+  priority      Priority          @default(MEDIUM)
+  version       Int               @default(1)
+  projectId     String
+  project       Project           @relation(fields: [projectId], references: [id])
+  createdById   String
+  createdBy     User              @relation(fields: [createdById], references: [id])
+  laborCost     Decimal           @default(0) @db.Decimal(15, 2)
+  materialCost  Decimal           @default(0) @db.Decimal(15, 2)
+  equipmentCost Decimal           @default(0) @db.Decimal(15, 2)
+  markupPercent Decimal           @default(0) @db.Decimal(5, 2)
+  totalCost     Decimal           @default(0) @db.Decimal(15, 2)
+  aiSummary     String?
+  submittedAt   DateTime?
+  approvedAt    DateTime?
+  paidAt        DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  attachments   Attachment[]
+  comments      Comment[]
+  approvals     Approval[]
+  laborEntries  LaborEntry[]
+  materialEntries MaterialEntry[]
+}
+
+model TMTicket {
+  id            String         @id @default(cuid())
+  number        String
+  title         String
+  description   String?
+  status        TMTicketStatus @default(DRAFT)
+  date          DateTime       @default(now())
+  projectId     String
+  project       Project        @relation(fields: [projectId], references: [id])
+  createdById   String
+  createdBy     User           @relation(fields: [createdById], references: [id])
+  laborCost     Decimal        @default(0) @db.Decimal(15, 2)
+  materialCost  Decimal        @default(0) @db.Decimal(15, 2)
+  equipmentCost Decimal        @default(0) @db.Decimal(15, 2)
+  totalCost     Decimal        @default(0) @db.Decimal(15, 2)
+  signature     String?
+  signedBy      String?
+  signedAt      DateTime?
+  location      String?
+  weatherCondition String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  attachments   Attachment[]
+  comments      Comment[]
+  laborEntries  LaborEntry[]
+  materialEntries MaterialEntry[]
+}
+
+model LaborEntry {
+  id             String       @id @default(cuid())
+  workerName     String
+  role           String?
+  hoursWorked    Decimal      @db.Decimal(8, 2)
+  hourlyRate     Decimal      @db.Decimal(10, 2)
+  total          Decimal      @db.Decimal(15, 2)
+  changeOrderId  String?
+  changeOrder    ChangeOrder? @relation(fields: [changeOrderId], references: [id])
+  tmTicketId     String?
+  tmTicket       TMTicket?    @relation(fields: [tmTicketId], references: [id])
+  date           DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+}
+
+model MaterialEntry {
+  id             String       @id @default(cuid())
+  description    String
+  quantity       Decimal      @db.Decimal(10, 3)
+  unit           String?
+  unitCost       Decimal      @db.Decimal(10, 2)
+  total          Decimal      @db.Decimal(15, 2)
+  supplier       String?
+  changeOrderId  String?
+  changeOrder    ChangeOrder? @relation(fields: [changeOrderId], references: [id])
+  tmTicketId     String?
+  tmTicket       TMTicket?    @relation(fields: [tmTicketId], references: [id])
+  createdAt      DateTime     @default(now())
+}
+
+model Attachment {
+  id            String       @id @default(cuid())
+  name          String
+  url           String
+  type          String
+  size          Int?
+  changeOrderId String?
+  changeOrder   ChangeOrder? @relation(fields: [changeOrderId], references: [id])
+  tmTicketId    String?
+  tmTicket      TMTicket?    @relation(fields: [tmTicketId], references: [id])
+  projectId     String?
+  project       Project?     @relation(fields: [projectId], references: [id])
+  createdAt     DateTime     @default(now())
+}
+
+model Comment {
+  id            String       @id @default(cuid())
+  content       String
+  authorId      String
+  author        User         @relation(fields: [authorId], references: [id])
+  changeOrderId String?
+  changeOrder   ChangeOrder? @relation(fields: [changeOrderId], references: [id])
+  tmTicketId    String?
+  tmTicket      TMTicket?    @relation(fields: [tmTicketId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Approval {
+  id            String       @id @default(cuid())
+  status        String
+  comment       String?
+  approverId    String
+  approver      User         @relation(fields: [approverId], references: [id])
+  changeOrderId String?
+  changeOrder   ChangeOrder? @relation(fields: [changeOrderId], references: [id])
+  createdAt     DateTime     @default(now())
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  type      String
+  read      Boolean   @default(false)
+  link      String?
+  createdAt DateTime  @default(now())
+}
+
+model ActivityLog {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  projectId String?
+  project   Project?  @relation(fields: [projectId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  metadata  Json?
+  createdAt DateTime  @default(now())
+}
